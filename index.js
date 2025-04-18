@@ -1,41 +1,66 @@
 const WebSocket = require('ws');
-const wss = new WebSocket.Server({ port: process.env.PORT || 3000 });
-const rooms = {};
+const PORT = process.env.PORT || 3000;
 
-wss.on('connection', socket => {
-    socket.on('message', message => {
+const server = new WebSocket.Server({ port: PORT }, () => {
+    console.log(`Signaling server running on port ${PORT}`);
+});
+
+const rooms = new Map(); // roomId -> Set of sockets
+
+server.on('connection', (socket) => {
+    let currentRoom = null;
+
+    socket.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            console.log("Received:", data); // Debug log
 
-            // Handle join messages separately
-            if (data.type === 'join') {
-                rooms[data.roomId] = rooms[data.roomId] || [];
-                rooms[data.roomId].push(socket);
-                socket.room = data.roomId;
-                return;
-            }
-
-            // Forward all other messages as-is to room members
-            if (socket.room && rooms[socket.room]) {
-                rooms[socket.room].forEach(client => {
-                    if (client !== socket && client.readyState === WebSocket.OPEN) {
-                        console.log("Forwarding:", data); // Debug log
-                        client.send(JSON.stringify(data));
+            switch (data.type) {
+                case 'create':
+                case 'join':
+                    currentRoom = data.roomId;
+                    if (!rooms.has(currentRoom)) {
+                        rooms.set(currentRoom, new Set());
                     }
-                });
+                    rooms.get(currentRoom).add(socket);
+                    break;
+
+                case 'offer':
+                case 'answer':
+                case 'candidate':
+                case 'notification':
+                    broadcastToRoom(currentRoom, socket, message);
+                    break;
+
+                case 'leave':
+                    removeFromRoom(currentRoom, socket);
+                    break;
             }
-        } catch (error) {
-            console.error("Error handling message:", error);
+        } catch (err) {
+            console.error('Invalid message:', message);
         }
     });
 
     socket.on('close', () => {
-        if (socket.room && rooms[socket.room]) {
-            rooms[socket.room] = rooms[socket.room].filter(s => s !== socket);
-            if (rooms[socket.room].length === 0) {
-                delete rooms[socket.room];
-            }
-        }
+        removeFromRoom(currentRoom, socket);
     });
 });
+
+function broadcastToRoom(roomId, senderSocket, message) {
+    const clients = rooms.get(roomId);
+    if (clients) {
+        for (const client of clients) {
+            if (client !== senderSocket && client.readyState === WebSocket.OPEN) {
+                client.send(message);
+            }
+        }
+    }
+}
+
+function removeFromRoom(roomId, socket) {
+    if (!roomId || !rooms.has(roomId)) return;
+    const clients = rooms.get(roomId);
+    clients.delete(socket);
+    if (clients.size === 0) {
+        rooms.delete(roomId);
+    }
+}
